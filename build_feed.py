@@ -48,7 +48,7 @@ ISO = {
 }
 
 VALID_STATUS = {"scheduled", "inProgress", "finished", "retired", "walkover"}
-VALID_ROUNDS = {"Q", "R128", "R64", "R32", "R16", "QF", "SF", "F"}
+VALID_ROUNDS = {"Q", "R1", "R2", "R3", "R4", "R128", "R64", "R32", "R16", "QF", "SF", "F", "RR"}
 
 
 def fetch(tour):
@@ -74,12 +74,17 @@ def status_of(comp):
     return "scheduled"
 
 
-def round_code(comp, max_numbered_round):
-    """Nome da rodada -> chave do contrato.
+NUMBERED_ROUND = re.compile(r"(?:Round (\d+)|(\d+)(?:st|nd|rd|th) Round)$")
 
-    "Round N" e relativo ao tamanho da chave, entao conta de tras para
-    frente: o maior N do torneio encosta nas quartas (R16), o anterior e
-    R32, e assim por diante.
+
+def round_code(comp):
+    """Nome da rodada -> chave do contrato, sem estimar nada.
+
+    Rodada numerada ("Round 3", "3rd Round") vira rotulo literal R3 (exibido
+    "3R", como ATP e midia fazem): verdade em qualquer torneio, com ou sem
+    byes, do primeiro ao ultimo dia. "Round of N" e explicito e mapeia
+    direto. Nome desconhecido devolve None e o jogo e descartado com aviso:
+    rotulo errado na tela e pior que jogo ausente.
     """
     name = (comp.get("round") or {}).get("displayName") or ""
     if name in ("Quarterfinal", "Quarterfinals"):
@@ -90,14 +95,17 @@ def round_code(comp, max_numbered_round):
         return "F"
     if name.startswith("Qualifying"):
         return "Q"
-    match = re.match(r"Round (?:of )?(\d+)$", name)
-    if not match:
-        return "R32"
-    number = int(match.group(1))
-    if name.startswith("Round of"):
-        return f"R{number}" if f"R{number}" in VALID_ROUNDS else "R32"
-    distance = (max_numbered_round or number) - number
-    return {0: "R16", 1: "R32", 2: "R64", 3: "R128"}.get(distance, "R128")
+    if name in ("Round Robin", "Group Stage"):
+        return "RR"
+    of_match = re.match(r"Round of (\d+)$", name)
+    if of_match:
+        return {128: "R128", 64: "R64", 32: "R32", 16: "R16"}.get(int(of_match.group(1)))
+    numbered = NUMBERED_ROUND.match(name)
+    if numbered:
+        number = int(numbered.group(1) or numbered.group(2))
+        if 1 <= number <= 4:
+            return f"R{number}"
+    return None
 
 
 def normalize_date(timestamp):
@@ -113,8 +121,9 @@ def player_of(competitor):
         return None
     sets_, tiebreaks = [], []
     for line in competitor.get("linescores") or []:
-        sets_.append(int(line.get("value", 0)))
-        tiebreaks.append(line.get("tiebreak"))
+        sets_.append(int(line.get("value") or 0))
+        tiebreak = line.get("tiebreak")
+        tiebreaks.append(int(tiebreak) if tiebreak is not None else None)
     seed = (competitor.get("curatedRank") or {}).get("current")
     if seed is not None and not 0 < seed <= 40:
         seed = None
@@ -129,7 +138,7 @@ def player_of(competitor):
 
 
 def build():
-    tournaments, seen = {}, set()
+    tournaments, seen, dropped = {}, set(), []
     for tour in TOURS:
         payload = fetch(tour)
         for event in payload.get("events", []):
@@ -139,17 +148,17 @@ def build():
                 if "singles" not in slug:
                     continue
                 comps = grouping.get("competitions", [])
-                numbered = [
-                    int(m.group(1))
-                    for comp in comps
-                    if (m := re.match(r"Round (\d+)$",
-                                      (comp.get("round") or {}).get("displayName") or ""))
-                ]
-                max_round = max(numbered) if numbered else None
                 gender = "f" if slug.startswith("womens") else "m"
                 for comp in comps:
                     comp_id = str(comp.get("id"))
                     if comp_id in seen:
+                        continue
+                    start = normalize_date(comp.get("date"))
+                    if start is None:
+                        continue  # jogo sem data nao pertence a dia nenhum na aba
+                    code = round_code(comp)
+                    if code is None:
+                        dropped.append((comp.get("round") or {}).get("displayName"))
                         continue
                     players = [player_of(c) for c in comp.get("competitors", [])]
                     if len(players) != 2 or None in players:
@@ -163,12 +172,18 @@ def build():
                     })
                     entry["matches"].append({
                         "id": comp_id,
-                        "round": round_code(comp, max_round),
+                        "round": code,
                         "gender": gender,
                         "status": status_of(comp),
-                        "startUTC": normalize_date(comp.get("date")),
+                        "startUTC": start,
                         "players": players,
                     })
+    total = sum(len(t["matches"]) for t in tournaments.values())
+    if dropped:
+        print(f"aviso: {len(dropped)} jogos descartados por rodada desconhecida: "
+              f"{sorted(set(str(d) for d in dropped))}", file=sys.stderr)
+    if total and len(dropped) > total * 0.10:
+        raise AssertionError("mais de 10% dos jogos com rodada desconhecida; contrato precisa evoluir")
     return {
         "schemaVersion": 1,
         "enabled": True,
@@ -178,17 +193,43 @@ def build():
 
 
 def validate(feed):
+    """Valida o mesmo que o Codable do app exige, campo a campo."""
     matches = [m for t in feed["tournaments"] for m in t["matches"]]
     assert feed["schemaVersion"] == 1
-    assert feed["tournaments"], "nenhum torneio veio da fonte"
-    assert matches, "nenhum jogo veio da fonte"
+    for tournament in feed["tournaments"]:
+        assert tournament["name"] and isinstance(tournament["name"], str), tournament["id"]
     for match in matches:
         assert match["status"] in VALID_STATUS, match
         assert match["round"] in VALID_ROUNDS, match
         assert len(match["players"]) == 2, match
-        if match["startUTC"] is not None:
-            datetime.strptime(match["startUTC"], "%Y-%m-%dT%H:%M:%SZ")
+        datetime.strptime(match["startUTC"], "%Y-%m-%dT%H:%M:%SZ")
+        for player in match["players"]:
+            assert player["name"] and isinstance(player["name"], str), match
+            assert all(isinstance(s, int) for s in player["sets"]), match
+            assert all(t is None or isinstance(t, int) for t in player["tb"]), match
     return len(matches)
+
+
+def empty_feed_is_suspicious(feed):
+    """Zero jogos e entressafra legitima ou solucao da fonte?
+
+    Se o arquivo publicado tem jogos recentes (ultimos 5 dias), um retorno
+    subitamente vazio e solucao: melhor falhar e manter o ultimo bom. Se o
+    publicado ja esta vazio ou velho, e entressafra: publicar vazio e correto
+    e a aba mostra o estado desenhado para isso.
+    """
+    if any(t["matches"] for t in feed["tournaments"]):
+        return False
+    try:
+        with urllib.request.urlopen(PUBLISHED, timeout=15) as response:
+            current = json.load(response)
+    except Exception:
+        return False
+    latest = [m["startUTC"] for t in current.get("tournaments", []) for m in t.get("matches", [])]
+    if not latest:
+        return False
+    newest = max(datetime.strptime(d, "%Y-%m-%dT%H:%M:%SZ") for d in latest if d)
+    return (datetime.utcnow() - newest).days < 5
 
 
 def unchanged_from_published(feed):
@@ -221,6 +262,7 @@ def main():
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     feed = build()
     total = validate(feed)
+    assert not empty_feed_is_suspicious(feed), "fonte devolveu vazio com o publicado ainda fresco"
     changed = not unchanged_from_published(feed)
     with open(OUT, "w", encoding="utf-8") as handle:
         json.dump(feed, handle, separators=(",", ":"), ensure_ascii=False)

@@ -11,7 +11,7 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 concurrency:
@@ -27,6 +27,19 @@ jobs:
       - uses: actions/checkout@v4
       - id: feed
         run: python3 build_feed.py
+      # O GitHub desliga crons de repositório parado ha 60 dias. Um commit
+      # vazio mensal mantem o robo vivo para sempre.
+      - name: heartbeat mensal
+        if: github.event_name == 'schedule'
+        run: |
+          last=$(git log -1 --format=%ct)
+          now=$(date +%s)
+          if [ $(( (now - last) / 86400 )) -ge 25 ]; then
+            git config user.name "feed-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git commit --allow-empty -m "chore: heartbeat para manter o cron vivo"
+            git push
+          fi
       - uses: actions/upload-pages-artifact@v3
         if: steps.feed.outputs.changed == 'true'
         with:
