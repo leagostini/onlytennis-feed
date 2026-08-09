@@ -228,6 +228,11 @@ def build():
                     court = (comp.get("venue") or {}).get("court")
                     if court:
                         match_entry["court"] = court
+                    # A fonte confessa horario de mentira: timeValid falso e
+                    # placeholder de sessao, nao programacao real. O app mostra
+                    # "a definir" e nao agenda aviso em cima dele.
+                    if comp.get("timeValid") is False:
+                        match_entry["timeTBD"] = True
                     if comp.get("wasSuspended"):
                         match_entry["suspended"] = True
                     entry["matches"].append(match_entry)
