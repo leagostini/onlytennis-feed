@@ -109,6 +109,10 @@ KNOWN_TOURNAMENTS = [
     ("australian open", "Australian Open", "slam", None),
     ("wimbledon", "Wimbledon", "slam", None),
     ("us open", "US Open", "slam", None),
+    # Exclusao antes da chave "atp finals": o torneio sub-21 de dezembro
+    # contem "ATP Finals" no nome e seria rebatizado errado (a primeira
+    # entrada que casa vence).
+    ("next gen", "Next Gen Finals", None, None),
     ("atp finals", "ATP Finals", "finals", None),
     ("wta finals", "WTA Finals", "finals", None),
 ]
