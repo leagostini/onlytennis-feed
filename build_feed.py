@@ -217,6 +217,8 @@ def emit_output(changed):
 
 
 def main():
+    import os
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
     feed = build()
     total = validate(feed)
     changed = not unchanged_from_published(feed)
