@@ -225,8 +225,12 @@ def player_of(competitor):
     seed = (competitor.get("curatedRank") or {}).get("current")
     if seed is not None and not 0 < seed <= 40:
         seed = None
+    # Nome curto de placar ("B. Shelton"), como a fonte formata (ela trata
+    # sobrenome composto melhor do que qualquer abreviacao nossa trataria).
+    short = athlete.get("shortName")
     return {
         "name": name,
+        "short": short if isinstance(short, str) and short and short != name else None,
         "pid": pid_of(athlete),
         "country": ISO.get((athlete.get("flag") or {}).get("alt") or ""),
         "seed": seed,
