@@ -77,6 +77,55 @@ COUNTRY3 = {
     "VNM": "VN",
 }
 
+# Nome conhecido e categoria dos torneios grandes. A fonte so da o nome de
+# patrocinador ("National Bank Open presented by Rogers"); a tabela vive
+# aqui, e curta (Slams, 1000 e Finals mudam pouco de ano em ano) e o
+# fallback e o nome limpo sem o "presented by". Dubai e Doha sao 1000
+# apenas no circuito feminino; no masculino ficam sem categoria.
+SPONSOR_SUFFIX = re.compile(r"\s+presented by .*$", re.IGNORECASE)
+KNOWN_TOURNAMENTS = [
+    ("national bank open", "Canadian Open", "1000", None),
+    ("canadian open", "Canadian Open", "1000", None),
+    ("cincinnati", "Cincinnati", "1000", None),
+    ("bnp paribas open", "Indian Wells", "1000", None),
+    ("indian wells", "Indian Wells", "1000", None),
+    ("miami open", "Miami", "1000", None),
+    ("monte-carlo", "Monte-Carlo", "1000", None),
+    ("monte carlo", "Monte-Carlo", "1000", None),
+    ("mutua madrid", "Madrid", "1000", None),
+    ("madrid open", "Madrid", "1000", None),
+    ("italian open", "Rome", "1000", None),
+    ("internazionali", "Rome", "1000", None),
+    ("shanghai", "Shanghai", "1000", None),
+    ("rolex paris", "Paris", "1000", None),
+    ("paris masters", "Paris", "1000", None),
+    ("wuhan", "Wuhan", "1000", "wta"),
+    ("china open", "Beijing", "1000", "wta"),
+    ("qatar", "Doha", "1000", "wta"),
+    ("doha", "Doha", "1000", "wta"),
+    ("dubai", "Dubai", "1000", "wta"),
+    ("french open", "Roland Garros", "slam", None),
+    ("roland garros", "Roland Garros", "slam", None),
+    ("australian open", "Australian Open", "slam", None),
+    ("wimbledon", "Wimbledon", "slam", None),
+    ("us open", "US Open", "slam", None),
+    ("atp finals", "ATP Finals", "finals", None),
+    ("wta finals", "WTA Finals", "finals", None),
+]
+
+
+def brand_of(name, major, tour):
+    """(shortName, tier) do torneio; tier None quando nao e dos grandes."""
+    clean = SPONSOR_SUFFIX.sub("", name or "").strip()
+    lowered = clean.lower()
+    for key, short, tier, only_tour in KNOWN_TOURNAMENTS:
+        if key in lowered:
+            if only_tour and tour != only_tour:
+                return short, None
+            return short, tier
+    return clean, ("slam" if major else None)
+
+
 VALID_STATUS = {"scheduled", "inProgress", "finished", "retired", "walkover"}
 VALID_ROUNDS = {"Q", "R1", "R2", "R3", "R4", "R128", "R64", "R32", "R16", "QF", "SF", "F", "RR"}
 
@@ -210,9 +259,13 @@ def build():
                     if len(players) != 2 or None in players:
                         continue
                     seen.add(comp_id)
+                    short, tier = brand_of(event.get("name"),
+                                           bool(event.get("major")), tour)
                     entry = tournaments.setdefault(event_id, {
                         "id": event_id,
                         "name": event.get("name"),
+                        "shortName": short,
+                        "tier": tier,
                         "tour": tour,
                         "major": bool(event.get("major")),
                         "matches": [],
