@@ -25,8 +25,6 @@ jobs:
       changed: ${{ steps.feed.outputs.changed }}
     steps:
       - uses: actions/checkout@v4
-      - id: feed
-        run: python3 build_feed.py
       # O GitHub desliga crons de repositório parado ha 60 dias. Um commit
       # vazio mensal mantem o robo vivo para sempre.
       - name: heartbeat mensal
@@ -40,6 +38,8 @@ jobs:
             git commit --allow-empty -m "chore: heartbeat para manter o cron vivo"
             git push
           fi
+      - id: feed
+        run: python3 build_feed.py
       - uses: actions/upload-pages-artifact@v3
         if: steps.feed.outputs.changed == 'true'
         with:
