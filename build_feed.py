@@ -229,7 +229,8 @@ def empty_feed_is_suspicious(feed):
     if not latest:
         return False
     newest = max(datetime.strptime(d, "%Y-%m-%dT%H:%M:%SZ") for d in latest if d)
-    return (datetime.utcnow() - newest).days < 5
+    now = datetime.now(timezone.utc).replace(tzinfo=None)  # naive UTC, como o strptime
+    return (now - newest).days < 5
 
 
 def unchanged_from_published(feed):
