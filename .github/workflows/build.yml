@@ -1,0 +1,44 @@
+# O robô da aba Circuito do Only Tennis.
+#
+# A cada 15 minutos: busca a fonte, valida e publica public/latest.json no
+# GitHub Pages. Duas proteções de experiência:
+#  - validação reprovada = nada é publicado e o Pages segue com o último bom;
+#  - dado idêntico ao que já está no ar = deploy dispensado (o selo
+#    "atualizado há X" do app só anda quando há novidade de verdade).
+name: build-feed
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.feed.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: feed
+        run: python3 build_feed.py
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.feed.outputs.changed == 'true'
+        with:
+          path: public
+  deploy:
+    needs: build
+    if: needs.build.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
