@@ -40,6 +40,17 @@ jobs:
           fi
       - id: feed
         run: python3 build_feed.py
+      # A memoria dos resultados: o arquivo acumulado vive no git, nao no
+      # Pages (que e substituido inteiro a cada deploy).
+      - name: arquiva resultados
+        run: |
+          git add archive
+          if ! git diff --cached --quiet; then
+            git config user.name "feed-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git commit -m "chore: arquiva resultados novos"
+            git push
+          fi
       - uses: actions/upload-pages-artifact@v3
         if: steps.feed.outputs.changed == 'true'
         with:

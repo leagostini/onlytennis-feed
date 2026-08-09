@@ -18,7 +18,11 @@ from datetime import datetime, timezone
 TOURS = ["atp", "wta"]
 URL = "https://site.api.espn.com/apis/site/v2/sports/tennis/{tour}/scoreboard"
 OUT = "public/latest.json"
+OUT_RANKINGS = "public/rankings.json"
+ARCHIVE = "archive/2026.json"
 PUBLISHED = "https://leagostini.github.io/onlytennis-feed/latest.json"
+PUBLISHED_RANKINGS = "https://leagostini.github.io/onlytennis-feed/rankings.json"
+RANKINGS_URL = "https://site.api.espn.com/apis/site/v2/sports/tennis/{tour}/rankings"
 
 # Pais por extenso (como vem da fonte) -> ISO-3166 alpha-2 (como o app espera).
 # Pais fora da tabela vira null e o app simplesmente nao desenha bandeira.
@@ -47,6 +51,31 @@ ISO = {
     "Venezuela": "VE", "Vietnam": "VN",
 }
 
+# Codigos de 3 letras (tenis usa o padrao olimpico; a uniao com ISO3 cobre os dois)
+COUNTRY3 = {
+    "ARG": "AR", "ARM": "AM", "AUS": "AU", "AUT": "AT", "AZE": "AZ",
+    "BAR": "BB", "BEL": "BE", "BIH": "BA", "BLR": "BY", "BOL": "BO",
+    "BRA": "BR", "BUL": "BG", "BGR": "BG", "CAN": "CA", "CHI": "CL",
+    "CHL": "CL", "CHN": "CN", "COL": "CO", "CRC": "CR", "CRO": "HR",
+    "HRV": "HR", "CYP": "CY", "CZE": "CZ", "DEN": "DK", "DNK": "DK",
+    "DOM": "DO", "ECU": "EC", "EGY": "EG", "ESA": "SV", "ESP": "ES",
+    "EST": "EE", "FIN": "FI", "FRA": "FR", "GBR": "GB", "GEO": "GE",
+    "GER": "DE", "DEU": "DE", "GRE": "GR", "GRC": "GR", "HKG": "HK",
+    "HUN": "HU", "INA": "ID", "IDN": "ID", "IND": "IN", "IRL": "IE",
+    "ISR": "IL", "ITA": "IT", "JAM": "JM", "JOR": "JO", "JPN": "JP",
+    "KAZ": "KZ", "KOR": "KR", "LAT": "LV", "LVA": "LV", "LIB": "LB",
+    "LBN": "LB", "LTU": "LT", "LUX": "LU", "MAR": "MA", "MAS": "MY",
+    "MYS": "MY", "MDA": "MD", "MEX": "MX", "MON": "MC", "MCO": "MC",
+    "NED": "NL", "NLD": "NL", "NOR": "NO", "NZL": "NZ", "PAR": "PY",
+    "PRY": "PY", "PER": "PE", "PHI": "PH", "PHL": "PH", "POL": "PL",
+    "POR": "PT", "PRT": "PT", "ROU": "RO", "RSA": "ZA", "ZAF": "ZA",
+    "RUS": "RU", "SRB": "RS", "SVK": "SK", "SLO": "SI", "SVN": "SI",
+    "SUI": "CH", "CHE": "CH", "SWE": "SE", "THA": "TH", "TPE": "TW",
+    "TWN": "TW", "TUN": "TN", "TUR": "TR", "UKR": "UA", "URU": "UY",
+    "URY": "UY", "USA": "US", "UZB": "UZ", "VEN": "VE", "VIE": "VN",
+    "VNM": "VN",
+}
+
 VALID_STATUS = {"scheduled", "inProgress", "finished", "retired", "walkover"}
 VALID_ROUNDS = {"Q", "R1", "R2", "R3", "R4", "R128", "R64", "R32", "R16", "QF", "SF", "F", "RR"}
 
@@ -55,6 +84,11 @@ def fetch(tour):
     # Sem User-Agent custom: a fonte aceita o padrao do urllib e recusa
     # os que fingem ser navegador.
     with urllib.request.urlopen(URL.format(tour=tour), timeout=30) as response:
+        return json.load(response)
+
+
+def fetch_url(url):
+    with urllib.request.urlopen(url, timeout=30) as response:
         return json.load(response)
 
 
@@ -114,6 +148,16 @@ def normalize_date(timestamp):
     return re.sub(r"T(\d\d):(\d\d)Z$", r"T\1:\2:00Z", timestamp)
 
 
+def pid_of(athlete):
+    """Identificador estavel do jogador, extraido do link do perfil."""
+    for link in athlete.get("links") or []:
+        found = re.search(r"/id/(\d+)(?:/|$)", link.get("href") or "")
+        if found:
+            return found.group(1)
+    raw = athlete.get("id")
+    return str(raw) if raw else None
+
+
 def player_of(competitor):
     athlete = competitor.get("athlete") or {}
     name = athlete.get("displayName")
@@ -129,6 +173,7 @@ def player_of(competitor):
         seed = None
     return {
         "name": name,
+        "pid": pid_of(athlete),
         "country": ISO.get((athlete.get("flag") or {}).get("alt") or ""),
         "seed": seed,
         "sets": sets_,
@@ -168,16 +213,23 @@ def build():
                         "id": event_id,
                         "name": event.get("name"),
                         "tour": tour,
+                        "major": bool(event.get("major")),
                         "matches": [],
                     })
-                    entry["matches"].append({
+                    match_entry = {
                         "id": comp_id,
                         "round": code,
                         "gender": gender,
                         "status": status_of(comp),
                         "startUTC": start,
                         "players": players,
-                    })
+                    }
+                    court = (comp.get("venue") or {}).get("court")
+                    if court:
+                        match_entry["court"] = court
+                    if comp.get("wasSuspended"):
+                        match_entry["suspended"] = True
+                    entry["matches"].append(match_entry)
     total = sum(len(t["matches"]) for t in tournaments.values())
     if dropped:
         print(f"aviso: {len(dropped)} jogos descartados por rodada desconhecida: "
@@ -233,6 +285,20 @@ def empty_feed_is_suspicious(feed):
     return (now - newest).days < 5
 
 
+def unchanged_pair(feed, rankings):
+    return unchanged_from_published(feed) and unchanged_rankings(rankings)
+
+
+def unchanged_rankings(rankings):
+    try:
+        with urllib.request.urlopen(PUBLISHED_RANKINGS, timeout=15) as response:
+            current = json.load(response)
+    except Exception:
+        return False
+    strip = lambda d: {k: v for k, v in d.items() if k != "generatedAt"}
+    return strip(rankings) == strip(current)
+
+
 def unchanged_from_published(feed):
     """O que acabou de sair da fonte e identico ao que ja esta no ar?
 
@@ -247,6 +313,99 @@ def unchanged_from_published(feed):
         return False
     strip = lambda d: {k: v for k, v in d.items() if k != "generatedAt"}
     return strip(feed) == strip(current)
+
+
+def build_rankings():
+    """Top 150 de cada circuito, com posicao anterior para a setinha."""
+    out = {}
+    for tour in TOURS:
+        payload = fetch_url(RANKINGS_URL.format(tour=tour))
+        ranks = (payload.get("rankings") or [{}])[0].get("ranks") or []
+        entries = []
+        for item in ranks:
+            athlete = item.get("athlete") or {}
+            name = athlete.get("displayName")
+            rank = item.get("current")
+            if not name or not isinstance(rank, int):
+                continue
+            country3 = (athlete.get("citizenshipCountry") or "").upper()
+            points = item.get("points")
+            entries.append({
+                "rank": rank,
+                "prev": item.get("previous") if isinstance(item.get("previous"), int) else None,
+                "points": int(points) if isinstance(points, (int, float)) else None,
+                "pid": pid_of(athlete),
+                "name": name,
+                "country": COUNTRY3.get(country3),
+                "age": athlete.get("age") if isinstance(athlete.get("age"), int) else None,
+            })
+        out[tour] = sorted(entries, key=lambda e: e["rank"])
+    return {
+        "schemaVersion": 1,
+        "generatedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "atp": out.get("atp", []),
+        "wta": out.get("wta", []),
+    }
+
+
+def validate_rankings(rankings):
+    for tour in ("atp", "wta"):
+        entries = rankings[tour]
+        assert entries, f"ranking {tour} veio vazio"
+        for entry in entries:
+            assert entry["name"] and isinstance(entry["rank"], int), entry
+    return len(rankings["atp"]) + len(rankings["wta"])
+
+
+def rankings_or_published():
+    """Ranking novo; se a fonte falhar, o publicado e reaproveitado.
+
+    O deploy do Pages substitui o site INTEIRO: publicar sem rankings.json
+    faria a tela de ranking do app dar 404. Sem novo e sem publicado, a run
+    falha e o site anterior continua no ar.
+    """
+    try:
+        fresh = build_rankings()
+        validate_rankings(fresh)
+        return fresh
+    except Exception as error:
+        print(f"aviso: ranking novo falhou ({error}); reaproveitando o publicado",
+              file=sys.stderr)
+        current = fetch_url(PUBLISHED_RANKINGS)
+        validate_rankings(current)
+        return current
+
+
+def merge_archive(feed):
+    """Acumula resultados encerrados em archive/2026.json (commitado pelo
+    workflow). E a memoria que a fonte nao da: base futura de confronto
+    direto e forma recente. Devolve quantos jogos novos entraram."""
+    try:
+        with open(ARCHIVE, encoding="utf-8") as handle:
+            archive = json.load(handle)
+    except FileNotFoundError:
+        archive = {"schemaVersion": 1, "matches": {}}
+    known = archive["matches"]
+    added = 0
+    for tournament in feed["tournaments"]:
+        for match in tournament["matches"]:
+            if match["status"] not in ("finished", "retired", "walkover"):
+                continue
+            if match["id"] in known:
+                continue
+            known[match["id"]] = {
+                "t": tournament["name"], "tour": tournament["tour"],
+                "gender": match["gender"], "round": match["round"],
+                "d": match["startUTC"], "status": match["status"],
+                "players": match["players"],
+            }
+            added += 1
+    if added:
+        import os
+        os.makedirs(os.path.dirname(ARCHIVE), exist_ok=True)
+        with open(ARCHIVE, "w", encoding="utf-8") as handle:
+            json.dump(archive, handle, separators=(",", ":"), ensure_ascii=False)
+    return added
 
 
 def emit_output(changed):
@@ -264,12 +423,18 @@ def main():
     feed = build()
     total = validate(feed)
     assert not empty_feed_is_suspicious(feed), "fonte devolveu vazio com o publicado ainda fresco"
-    changed = not unchanged_from_published(feed)
+    rankings = rankings_or_published()
+    archived = merge_archive(feed)
+    changed = not unchanged_pair(feed, rankings)
     with open(OUT, "w", encoding="utf-8") as handle:
         json.dump(feed, handle, separators=(",", ":"), ensure_ascii=False)
+    with open(OUT_RANKINGS, "w", encoding="utf-8") as handle:
+        json.dump(rankings, handle, separators=(",", ":"), ensure_ascii=False)
     emit_output(changed)
     label = "novidade" if changed else "sem mudanca, deploy dispensado"
-    print(f"ok: {len(feed['tournaments'])} torneios, {total} jogos ({label})")
+    print(f"ok: {len(feed['tournaments'])} torneios, {total} jogos, "
+          f"ranking {len(rankings['atp'])}+{len(rankings['wta'])}, "
+          f"{archived} arquivados ({label})")
 
 
 if __name__ == "__main__":
