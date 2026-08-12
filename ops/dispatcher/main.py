@@ -36,8 +36,12 @@ PUBLISHED = "https://leagostini.github.io/onlytennis-feed/latest.json"
 # Acima disto, com jogo acontecendo, o feed esta parado de verdade.
 LIMITE_MIN = int(os.environ.get("LIMITE_ATRASO_MIN", "30"))
 # Folga para um jogo que comecou atrasado antes de contar como "devia estar
-# se movendo": a fonte remarca horario o tempo todo no comeco do dia.
-FOLGA_INICIO_MIN = 30
+# se movendo". Era 30 min, e 30 min e pouco para tenis: sessao que atrasa uma
+# hora e rotina (chuva, jogo anterior em tres sets, "not before"), e o feed
+# publicado agora traz nove jogos de qualifying marcados para o mesmo horario.
+# Com 30, uma tarde chuvosa normal acendia o alarme com o sistema inteiro sao,
+# e alarme que mente uma vez deixa de ser lido.
+FOLGA_INICIO_MIN = 90
 
 
 def disparar_workflow():
@@ -77,6 +81,11 @@ def deveria_estar_se_movendo(feed, agora):
     """
     for torneio in feed.get("tournaments", []):
         for jogo in torneio.get("matches", []):
+            # Jogo suspenso (chuva, escuridao) nao pode mudar por definicao, e
+            # a suspensao noturna de um Slam dura uma noite inteira. Sem esta
+            # linha o alarme tocaria a noite toda sobre um sistema correto.
+            if jogo.get("suspended"):
+                continue
             if jogo.get("status") == "inProgress":
                 return True
             if jogo.get("status") == "scheduled" and not jogo.get("timeTBD"):
@@ -84,7 +93,10 @@ def deveria_estar_se_movendo(feed, agora):
                     inicio = datetime.strptime(
                         jogo["startUTC"], "%Y-%m-%dT%H:%M:%SZ"
                     ).replace(tzinfo=timezone.utc)
-                except (KeyError, ValueError):
+                except (KeyError, TypeError, ValueError):
+                    # TypeError cobre `startUTC: null`, que sem isto escapava
+                    # para o except de cima e desligava o diagnostico inteiro
+                    # em vez de pular um jogo.
                     continue
                 if (agora - inicio).total_seconds() / 60 > FOLGA_INICIO_MIN:
                     return True
@@ -113,29 +125,53 @@ def checar_frescor():
             "feedParado": com_jogo and idade > LIMITE_MIN,
         }
     except Exception as erro:  # noqa: BLE001 - diagnostico nunca quebra o disparo
-        return {"erroChecagem": str(erro)}
+        return {"erroChecagem": type(erro).__name__}
 
 
 @functions_framework.http
 def disparar(request):
-    """Entrada HTTP. O Scheduler chama com OIDC; nao ha rota publica."""
+    """Entrada HTTP. O Scheduler chama com OIDC; nao ha rota publica.
+
+    O diagnostico roda SEMPRE, inclusive quando o disparo falha. Antes ele so
+    rodava no caminho feliz, e isso deixava o alerta cego justamente na pior
+    falha possivel: token revogado ou repositorio renomeado fazem todo tick
+    morrer no 401/404, nenhum log carrega `feedParado`, a metrica fica em zero
+    e o feed volta calado a depender do cron de 22%. Falha do disparo e
+    exatamente quando queremos saber se ha jogo acontecendo.
+    """
+    falha = None
+    status = None
     try:
         status = disparar_workflow()
     except urllib.error.HTTPError as erro:
-        corpo = erro.read().decode("utf-8", "replace")[:300]
-        print(json.dumps({"severity": "ERROR", "message": "disparo falhou",
-                          "status": erro.code, "corpo": corpo}))
-        return ("disparo falhou", 502)
+        # O corpo vem do GitHub, entao pode ir para o log inteiro.
+        falha = {"status": erro.code,
+                 "corpo": erro.read().decode("utf-8", "replace")[:300]}
     except Exception as erro:  # noqa: BLE001
-        print(json.dumps({"severity": "ERROR", "message": "disparo falhou",
-                          "erro": str(erro)}))
-        return ("disparo falhou", 502)
+        # So o TIPO da excecao. `str(erro)` aqui e caminho de vazamento: se o
+        # token for gravado com uma quebra de linha no fim, o http.client
+        # levanta ValueError com o valor do header dentro da mensagem, e o
+        # token inteiro iria parar no Cloud Logging sem ninguem perceber.
+        falha = {"erro": type(erro).__name__}
 
     diagnostico = checar_frescor()
-    # feedParado=true e o que a politica de alerta do Cloud Logging procura.
+    # feedParado=true e o que a politica de alerta do Cloud Logging procura;
+    # disparoFalhou=true e a segunda politica, a que pega o gatilho morto.
+    if falha is not None:
+        print(json.dumps({
+            "severity": "ERROR",
+            "message": "disparo falhou",
+            "disparoFalhou": True,
+            **falha,
+            **diagnostico,
+        }))
+        return ("disparo falhou", 502)
+
     print(json.dumps({
-        "severity": "WARNING" if diagnostico.get("feedParado") else "INFO",
+        "severity": "WARNING" if diagnostico.get("feedParado")
+                    or diagnostico.get("erroChecagem") else "INFO",
         "message": "workflow disparado",
+        "disparoFalhou": False,
         "statusGitHub": status,
         **diagnostico,
     }))

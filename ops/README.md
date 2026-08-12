@@ -143,11 +143,26 @@ gcloud logging metrics create feed_parado \
     jsonPayload.feedParado=true'
 ```
 
-Falta a política de alerta sobre ela: condição "any time series > 0" numa
-janela de 30 min, com um canal de e-mail. O canal precisa ser verificado
-pelo dono da caixa (o Google manda um e-mail de confirmação), por isso não
-foi criado junto. O limite é ajustável sem redeploy pela variável
-`LIMITE_ATRASO_MIN`.
+Faltam **duas** políticas de alerta, e a segunda é a que mais importa:
+
+| política | métrica | pega o quê |
+|---|---|---|
+| feed parado | `feed_parado` | o robô roda, mas o publicado não anda com jogo acontecendo |
+| gatilho morto | `jsonPayload.disparoFalhou=true` | token revogado, repositório renomeado, GitHub fora |
+
+Sem a segunda, o modo de falha mais provável passa em silêncio: se o disparo
+falha, o robô simplesmente não roda, o Actions não acusa nada (não houve
+execução para falhar) e o feed volta calado a depender do cron de 22%. A
+função marca `disparoFalhou` em todo tick, justamente para isso.
+
+Ambas com condição "any time series > 0" numa janela de 30 min e um canal de
+e-mail. O canal precisa ser verificado pelo dono da caixa (o Google manda um
+e-mail de confirmação), por isso não foi criado junto.
+
+O limite de atraso vive em `LIMITE_ATRASO_MIN`. Mudar exige revisão nova da
+função (é lido no import, e no Cloud Run variável de ambiente só muda com
+revisão), e tem que ser com `--update-env-vars`: o `--set-env-vars` dos
+scripts daqui substitui o conjunto inteiro e devolveria o limite para 30.
 
 ## 5. App
 

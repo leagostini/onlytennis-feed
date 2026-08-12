@@ -46,10 +46,13 @@ echo
 echo "=== Passo 2 de 5: conferindo se o token serve ==="
 # 200 aqui significa que o token enxerga o robô neste repositório. A permissão
 # de escrita só o disparo de verdade comprova, e é o passo 5.
-CODIGO="$(curl -s -o /dev/null -w '%{http_code}' \
+# O `|| true` importa: com `set -e`, curl que falha por falta de rede encerra
+# o script aqui, e a mensagem amigavel logo abaixo (a que fala em internet
+# fora do ar) nunca chegaria a ser impressa.
+CODIGO="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
   -H "Authorization: Bearer ${PAT}" \
   -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/${REPO}/actions/workflows/feed.yml")"
+  "https://api.github.com/repos/${REPO}/actions/workflows/feed.yml" || true)"
 
 if [ "$CODIGO" != "200" ]; then
   echo "ERRO: o GitHub respondeu ${CODIGO} e o token não foi gravado."
@@ -88,8 +91,21 @@ echo "ok, função no ar."
 
 echo
 echo "=== Passo 5 de 5: ligando o agendador e testando ==="
-ANTES="$(curl -s "https://api.github.com/repos/${REPO}/actions/workflows/feed.yml/runs?event=workflow_dispatch&per_page=1" \
-  | python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("workflow_runs") or [{}]; print(r[0].get("id",0))')"
+# Idem: a leitura da API nao pode derrubar o script. Uma falha aqui, entre o
+# token gravado e o agendador solto, deixaria o sistema meio ligado sem dizer
+# uma palavra, que e o pior desfecho possivel para um script que promete
+# "um comando so".
+ultima_run() {
+  curl -s --max-time 15 \
+    "https://api.github.com/repos/${REPO}/actions/workflows/feed.yml/runs?event=workflow_dispatch&per_page=1" 2>/dev/null \
+    | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin); r = d.get("workflow_runs") or [{}]
+    print(r[0].get("id", 0))
+except Exception:
+    print("indisponivel")' 2>/dev/null || echo "indisponivel"
+}
+ANTES="$(ultima_run)"
 
 gcloud scheduler jobs resume "$JOB" --location="$REGION" >/dev/null
 gcloud scheduler jobs run "$JOB" --location="$REGION" >/dev/null
@@ -98,10 +114,12 @@ echo "agendador ligado, disparo de teste enviado. Esperando o GitHub responder..
 DEPOIS="$ANTES"
 for _ in $(seq 1 12); do
   sleep 5
-  DEPOIS="$(curl -s "https://api.github.com/repos/${REPO}/actions/workflows/feed.yml/runs?event=workflow_dispatch&per_page=1" \
-    | python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("workflow_runs") or [{}]; print(r[0].get("id",0))')"
-  [ "$DEPOIS" != "$ANTES" ] && break
+  DEPOIS="$(ultima_run)"
+  [ "$DEPOIS" != "$ANTES" ] && [ "$DEPOIS" != "indisponivel" ] && break
 done
+# Sem leitura confiavel da API nao da para afirmar nem negar; o proprio texto
+# do desfecho avisa em vez de cantar vitoria ou alarme falso.
+[ "$ANTES" = "indisponivel" ] && DEPOIS="$ANTES"
 
 echo
 if [ "$DEPOIS" != "$ANTES" ]; then
