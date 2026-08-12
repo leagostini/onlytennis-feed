@@ -32,7 +32,10 @@ fi
 echo
 echo "=== Passo 1 de 5: o token ==="
 printf 'Cole o token do GitHub e aperte Enter (não aparece nada na tela, é normal): '
-read -rs PAT
+# O `|| true` é obrigatório: texto colado (ou vindo de `pbpaste`) não termina
+# com quebra de linha, o `read` devolve 1 nesse caso mesmo tendo lido tudo, e
+# com `set -e` o script morreria calado antes de conferir o token.
+read -rs PAT || true
 echo
 if [ -z "$PAT" ]; then
   echo "ERRO: nada foi colado. Rode de novo."
