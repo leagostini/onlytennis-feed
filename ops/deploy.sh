@@ -21,7 +21,15 @@ CRON="${CRON:-*/15 * * * *}"
 SA_FUNCAO="${FUNCAO}@${PROJECT}.iam.gserviceaccount.com"
 SA_SCHEDULER="${JOB}-invoker@${PROJECT}.iam.gserviceaccount.com"
 
-gcloud config set project "$PROJECT"
+# O projeto e a conta valem so para este processo. Nada de `gcloud config set`:
+# a maquina tem tres contas autenticadas e o quota project global aponta para
+# outro projeto, entao mexer na config global e o caminho curto para rodar no
+# lugar errado depois.
+export CLOUDSDK_CORE_PROJECT="$PROJECT"
+export CLOUDSDK_BILLING_QUOTA_PROJECT="$PROJECT"
+if [ -n "${CONTA:-}" ]; then
+  export CLOUDSDK_CORE_ACCOUNT="$CONTA"
+fi
 
 echo "==> habilitando APIs"
 gcloud services enable \

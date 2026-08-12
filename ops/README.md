@@ -42,27 +42,51 @@ hoje, faça 1 e meça em paralelo.
 
 ## 1. Subir o gatilho
 
-Crie antes um **PAT fine-grained** em github.com/settings/personal-access-tokens:
+**Já está no ar** no projeto `only-tennis`, região `us-central1`: segredo,
+as duas contas de serviço, a função e o job. O que falta é o token, e ele é
+o único passo que não dá para automatizar — o GitHub não emite PAT por API.
+
+| | |
+|---|---|
+| projeto / região | `only-tennis` / `us-central1` |
+| conta usada | `leandro.contact@gmail.com` (owner) |
+| função | `feed-dispatcher`, sem acesso público |
+| job | `feed-15min`, **pausado** até o PAT chegar |
+| segredo | `onlytennis-feed-pat`, versão 1 = placeholder |
+
+Crie o **PAT fine-grained** em github.com/settings/personal-access-tokens:
 
 - Repository access: **somente** `leagostini/onlytennis-feed`
 - Permissions → **Actions: Read and write**. Só isso. Nada de `contents`.
 - Expiração: 90 dias (anote para renovar — veja "Rotação" no fim)
 
+Grave o token (a digitação fica oculta e nada vai parar no histórico do
+shell):
+
 ```bash
-export PROJECT=<id-do-seu-projeto-gcp>
-export REGION=us-central1
-./ops/deploy.sh          # pede o PAT com digitação oculta
+printf 'Cole o PAT: '; read -rs PAT; echo; printf '%s' "$PAT" | CLOUDSDK_BILLING_QUOTA_PROJECT=only-tennis gcloud secrets versions add onlytennis-feed-pat --data-file=- --project=only-tennis --account=leandro.contact@gmail.com; unset PAT
 ```
 
-O script cria o segredo, **duas** contas de serviço separadas (a função lê o
-segredo mas não se invoca; o scheduler invoca mas nunca vê o segredo), a
-função sem acesso público e o job de 15 minutos.
+O segredo entra na função como variável de ambiente, resolvida quando a
+instância sobe — então depois de gravar é preciso uma revisão nova e soltar
+o job:
+
+```bash
+CONTA=leandro.contact@gmail.com PROJECT=only-tennis GRAVAR_PAT=0 ./ops/deploy.sh
+gcloud scheduler jobs resume feed-15min --location=us-central1 --project=only-tennis
+gcloud scheduler jobs run feed-15min --location=us-central1 --project=only-tennis
+```
+
+Para montar tudo do zero em outro projeto, o `deploy.sh` faz o caminho
+inteiro sozinho (`GRAVAR_PAT=1` pede o token com digitação oculta): cria o
+segredo, **duas** contas de serviço separadas (a função lê o segredo mas não
+se invoca; o scheduler invoca mas nunca vê o segredo), a função sem acesso
+público e o job de 15 minutos.
 
 Teste:
 
 ```bash
-gcloud scheduler jobs run feed-15min --location=$REGION
-gcloud functions logs read feed-dispatcher --region=$REGION --limit=5
+gcloud functions logs read feed-dispatcher --region=us-central1 --project=only-tennis --limit=5
 ```
 
 Confira que apareceu execução nova em Actions. A partir daí a mediana entre
@@ -108,6 +132,9 @@ há jogo em andamento (ou marcado cujo horário já passou) **e** o publicado
 está parado há mais de 30 min. Noite tranquila e entressafra nunca disparam,
 que é o erro clássico de alertar por idade pura.
 
+A métrica `feed_parado` **já está criada** no projeto `only-tennis` (foi
+assim):
+
 ```bash
 gcloud logging metrics create feed_parado \
   --description="feed sem atualizar com jogo acontecendo" \
@@ -116,9 +143,11 @@ gcloud logging metrics create feed_parado \
     jsonPayload.feedParado=true'
 ```
 
-Depois crie a política em Monitoring → Alerting sobre a métrica `feed_parado`,
-condição "any time series > 0" numa janela de 30 min, com seu e-mail como
-canal. O limite é ajustável sem redeploy pela variável `LIMITE_ATRASO_MIN`.
+Falta a política de alerta sobre ela: condição "any time series > 0" numa
+janela de 30 min, com um canal de e-mail. O canal precisa ser verificado
+pelo dono da caixa (o Google manda um e-mail de confirmação), por isso não
+foi criado junto. O limite é ajustável sem redeploy pela variável
+`LIMITE_ATRASO_MIN`.
 
 ## 5. App
 
@@ -172,8 +201,11 @@ O `deploy.sh` adiciona **versão nova** ao mesmo segredo, e a função usa
 `:latest`. Para trocar o token sem mexer em mais nada:
 
 ```bash
-PROJECT=<projeto> GRAVAR_PAT=1 ./ops/deploy.sh
+CONTA=leandro.contact@gmail.com PROJECT=only-tennis GRAVAR_PAT=1 ./ops/deploy.sh
 ```
+
+O redeploy junto é de propósito: sem revisão nova, a instância que já está
+de pé continua com o token velho até reciclar.
 
 ## Voltar atrás
 
@@ -181,7 +213,7 @@ O cron nunca foi removido, então basta desligar o job — o sistema volta ao
 comportamento anterior sozinho:
 
 ```bash
-gcloud scheduler jobs pause feed-15min --location=$REGION
+gcloud scheduler jobs pause feed-15min --location=us-central1 --project=only-tennis
 ```
 
 Rodar duas vezes ao mesmo tempo é seguro: `merge_archive()` descarta id de
