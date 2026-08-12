@@ -1,0 +1,3 @@
+# Unica dependencia: o runtime de funcoes do GCP. As chamadas HTTP usam
+# urllib da biblioteca padrao, como o build_feed.py.
+functions-framework==3.*
