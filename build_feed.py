@@ -12,6 +12,7 @@ nao acontece e o GitHub Pages continua servindo o ultimo arquivo bom.
 import json
 import re
 import sys
+import unicodedata
 import urllib.request
 from datetime import datetime, timezone
 
@@ -95,7 +96,7 @@ KNOWN_TOURNAMENTS = [
     ("mutua madrid", "Madrid", "1000", None),
     ("madrid open", "Madrid", "1000", None),
     ("italian open", "Rome", "1000", None),
-    ("internazionali", "Rome", "1000", None),
+    ("internazionali bnl", "Rome", "1000", None),
     ("shanghai", "Shanghai", "1000", None),
     ("rolex paris", "Paris", "1000", None),
     ("paris masters", "Paris", "1000", None),
@@ -117,17 +118,68 @@ KNOWN_TOURNAMENTS = [
     ("wta finals", "WTA Finals", "finals", None),
 ]
 
+# Torneios 500 pela cidade da fonte (circuito, cidade em minusculas). A
+# categoria nao vem na fonte; a lista sai do calendario oficial de cada
+# circuito e precisa ser revista a cada temporada. Fora daqui (e da tabela de
+# cima) o torneio fica sem categoria: 250 e 125 nao sao distinguiveis com
+# seguranca, e selo errado e pior que selo nenhum.
+TIER_500 = {
+    (tour, city): "500"
+    for tour, cities in {
+        # atptour.com, calendario 2026 (16 torneios)
+        "atp": ["dallas", "rotterdam", "doha", "rio de janeiro", "acapulco",
+                "dubai", "barcelona", "munich", "hamburg", "halle", "london",
+                "washington", "tokyo", "beijing", "basel", "vienna"],
+        # wtatennis.com, calendario 2026 (17 torneios; Singapura subiu e
+        # Seul caiu em relacao a 2025)
+        "wta": ["brisbane", "adelaide", "abu dhabi", "merida", "charleston",
+                "linz", "stuttgart", "strasbourg", "london", "berlin",
+                "bad homburg", "washington", "monterrey", "guadalajara",
+                "singapore", "ningbo", "tokyo"],
+    }.items()
+    for city in cities
+}
 
-def brand_of(name, major, tour):
-    """(shortName, tier) do torneio; tier None quando nao e dos grandes."""
+# Ordem de importancia, para o torneio combinado (o mesmo evento nos dois
+# circuitos) ficar com a categoria mais alta das duas.
+TIER_RANK = {"slam": 0, "finals": 1, "1000": 2, "500": 3}
+
+
+def city_of(event):
+    """Cidade do torneio como a fonte escreve ("Mallorca, Spain" -> "Mallorca").
+
+    E o nome que as pessoas usam para os torneios fora da tabela de cima: a
+    fonte so da o de patrocinador ("Vanda Pharmaceuticals Mallorca Women's
+    Championships"), que nao cabe na tela e nao e como ninguem chama o
+    torneio. None quando a fonte nao traz o local.
+    """
+    venue = (event.get("venue") or {}).get("displayName") or ""
+    city = venue.split(",")[0].strip()
+    return city or None
+
+
+def city_key(city):
+    """Cidade para consulta na tabela: minusculas e sem acento."""
+    plain = unicodedata.normalize("NFKD", city or "")
+    return "".join(c for c in plain if not unicodedata.combining(c)).lower()
+
+
+def brand_of(name, major, tour, city=None):
+    """(shortName, tier) do torneio; tier None quando a categoria nao e
+    conhecida com seguranca (melhor sem selo do que com selo errado)."""
     clean = SPONSOR_SUFFIX.sub("", name or "").strip()
     lowered = clean.lower()
     for key, short, tier, only_tour in KNOWN_TOURNAMENTS:
         if key in lowered:
+            # Dubai e Doha sao 1000 so no feminino: no masculino a busca
+            # segue, e a categoria vem da tabela de 500 pela cidade.
             if only_tour and tour != only_tour:
-                return short, None
+                return short, TIER_500.get((tour, city_key(city or short)))
             return short, tier
-    return clean, ("slam" if major else None)
+    if major:
+        return clean, "slam"
+    tier = TIER_500.get((tour, city_key(city))) if city else None
+    return (city or clean), tier
 
 
 VALID_STATUS = {"scheduled", "inProgress", "finished", "retired", "walkover"}
@@ -268,7 +320,8 @@ def build():
                         continue
                     seen.add(comp_id)
                     short, tier = brand_of(event.get("name"),
-                                           bool(event.get("major")), tour)
+                                           bool(event.get("major")), tour,
+                                           city_of(event))
                     entry = tournaments.setdefault(event_id, {
                         "id": event_id,
                         "name": event.get("name"),
@@ -278,6 +331,10 @@ def build():
                         "major": bool(event.get("major")),
                         "matches": [],
                     })
+                    # Torneio combinado chega pelos dois circuitos: vale a
+                    # categoria mais alta (Brisbane e 250 no ATP e 500 no WTA).
+                    if TIER_RANK.get(tier, 99) < TIER_RANK.get(entry["tier"], 99):
+                        entry["tier"] = tier
                     match_entry = {
                         "id": comp_id,
                         "round": code,
