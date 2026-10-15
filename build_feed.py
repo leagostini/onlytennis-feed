@@ -442,9 +442,12 @@ def unchanged_from_published(feed):
 def build_rankings():
     """Top 150 de cada circuito, com posicao anterior para a setinha."""
     out = {}
+    source_updated = {}
     for tour in TOURS:
         payload = fetch_url(RANKINGS_URL.format(tour=tour))
-        ranks = (payload.get("rankings") or [{}])[0].get("ranks") or []
+        ranking = (payload.get("rankings") or [{}])[0]
+        ranks = ranking.get("ranks") or []
+        source_updated[tour] = source_timestamp(ranking.get("update"))
         entries = []
         for item in ranks:
             athlete = item.get("athlete") or {}
@@ -469,7 +472,29 @@ def build_rankings():
         "generatedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "atp": out.get("atp", []),
         "wta": out.get("wta", []),
+        # Quando a FONTE atualizou cada lista, e nao quando a ATP/WTA publicou
+        # o ranking: a ESPN marca o dia do processamento dela, que nao precisa
+        # cair na segunda-feira oficial. O app mostra "fonte atualizada em",
+        # nunca "ranking oficial de". Campo aditivo: o app antigo o ignora.
+        "sourceUpdatedAt": source_updated,
     }
+
+
+def source_timestamp(raw):
+    """Normaliza o carimbo da fonte para o formato do feed, ou None.
+
+    A ESPN manda "2026-10-01T07:00Z", sem segundos; o resto do contrato usa
+    "%Y-%m-%dT%H:%M:%SZ". Formato desconhecido vira None: sem data, a tela
+    nao mostra data, e nunca uma inventada.
+    """
+    if not isinstance(raw, str):
+        return None
+    for pattern in ("%Y-%m-%dT%H:%MZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return datetime.strptime(raw, pattern).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            continue
+    return None
 
 
 def validate_rankings(rankings):
